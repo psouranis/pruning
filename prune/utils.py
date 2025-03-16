@@ -1,75 +1,110 @@
-import torch
 import argparse
-import os
-import torch.nn as nn
+import json
 import numpy as np
+import os
+import random
+import torch
+import torch.nn as nn
 
-from functools import partial
-from inspect import getfullargspec
-from transformers import AutoModelForImageClassification
-from torchvision import transforms
-from typing import Any
-from torchprofile import profile_macs
-from torch.utils.data import DataLoader
-from collections.abc import Mapping, Iterable
 from classes import IMAGENET2012_CLASSES, classes_to_idx
-from torch import Tensor
+from collections.abc import Callable, Iterable, Mapping
+from inspect import getfullargspec
 from sklearn.metrics import accuracy_score
-from tqdm import tqdm
-
+from torch import Tensor
 from torch.nn.utils.prune import (
-    random_structured,
-    random_unstructured,
     l1_unstructured,
     ln_structured,
+    random_structured,
+    random_unstructured,
     remove,
 )
+from torch.utils.data import DataLoader
+from torchprofile import profile_macs
+from torchvision import transforms
+from tqdm import tqdm
+from transformers import AutoModelForImageClassification
+from typing import Any
 
 
-def print_namespace(namespace: argparse.Namespace):
+def contains_any_substring_loop(
+    main_string: str, list_of_substrings: list[str]
+) -> bool:
     """
-    Print the namespace of the arguments
+    Checks if a main string contains any of the substrings in a given list.
+
+    Args:
+      main_string: The string to search within.
+      list_of_substrings: A list of strings to search for.
+
+    Returns:
+      True if any of the substrings are found in the main string, False otherwise.
+    """
+    return any(main_string.find(substring) != -1 for substring in list_of_substrings)
+
+
+def set_seed(seed):
+    """Sets the random seed for PyTorch, NumPy, and Python's random module.
+
+    Args:
+        seed (int): The seed value to use.
+    """
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    # Optional: Ensure deterministic behavior on CUDA (may impact performance)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def print_namespace(namespace: argparse.Namespace) -> None:
+    """Print the namespace of the arguments
 
     Args:
         namespace: Namespace of the arguments
-    """
 
+    """
     for key, value in vars(namespace).items():
-        print(f'{key}: {value}')
+        print(f"{key}: {value}")
 
 
-def create_hf_dataset_collate_fn(transform: transforms.Compose):
-    """
-    Wrapper function to create a collate_fn for Hugging Face Datasets that return dictionaries.
+def create_hf_dataset_collate_fn(
+    transform: transforms.Compose,
+) -> Callable[[Iterable[Mapping[str, Any]]], dict[str, Tensor]]:
+    """Wrapper function to create a collate_fn for Hugging Face Datasets that return dictionaries.
 
     Args:
         transform: Transform to apply to the images
 
     Returns:
         hf_dataset_collate_fn: Collate_fn for Hugging Face Datasets
+
     """
 
-    def hf_dataset_collate_fn(batch: Iterable[Mapping[str, Any]]):
-        """
-        Collate_fn for Hugging Face Datasets that return dictionaries.
+    def hf_dataset_collate_fn(batch: Iterable[Mapping[str, Any]]) -> dict[str, Tensor]:
+        """Collate_fn for Hugging Face Datasets that return dictionaries.
         Assumes each item in the batch is a dictionary with "image" and "label" keys.
         """
-
         images = []
         labels = []
 
         for item in batch:
             try:
                 image = item["image"]
-                label = classes_to_idx[IMAGENET2012_CLASSES[os.path.splitext(image.filename)[0].rsplit('_', 1)[1]]]
+                label = classes_to_idx[
+                    IMAGENET2012_CLASSES[
+                        os.path.splitext(image.filename)[0].rsplit("_", 1)[1]
+                    ]
+                ]
 
-                if image.mode != 'RGB':
+                if image.mode != "RGB":
                     continue
                 else:
                     image = transform(image, return_tensors="pt")
                     images.append(image["pixel_values"].squeeze(0))
                     labels.append(label)
-            except:
+            except Exception:
                 continue
 
         collated_batch = {
@@ -82,9 +117,10 @@ def create_hf_dataset_collate_fn(transform: transforms.Compose):
     return hf_dataset_collate_fn
 
 
-def create_model(model_name: str, device: str = 'cuda', half: bool = False):
-    """
-    Create a model from timm
+def create_model(
+    model_name: str, device: str = "cuda", half: bool = False
+) -> nn.Module:
+    """Create a model from timm
 
     Args:
         model_name: Name of the model in timm
@@ -93,6 +129,7 @@ def create_model(model_name: str, device: str = 'cuda', half: bool = False):
 
     Returns:
         model: Created model
+
     """
     model = AutoModelForImageClassification.from_pretrained(model_name).to(device)
     if half:
@@ -102,44 +139,42 @@ def create_model(model_name: str, device: str = 'cuda', half: bool = False):
     return model
 
 
-def get_model_dtype(model):
-    """
-    Get the dtype of the model
+def get_model_dtype(model: nn.Module) -> int:
+    """Get the dtype of the model
 
     Args:
         model: Model to get the dtype of
 
     Returns:
         dtype: dtype of the model
-    """
 
+    """
     return next(model.parameters()).dtype.itemsize
 
 
-def get_torch_autocast_dtype(t: str):
-    """
-    Get the torch type from the string
+def get_torch_autocast_dtype(t: str) -> torch.dtype:
+    """Get the torch type from the string
 
     Args:
         t: Type in string format
 
     Returns:
         torch_type: Torch type
+
     """
     match t:
-        case 'float32':
+        case "float32":
             return torch.float32
-        case 'float16':
+        case "float16":
             return torch.float16
-        case 'bfloat16':
+        case "bfloat16":
             return torch.bfloat16
         case _:
             raise ValueError(f"Select one of 'float32', 'float16', 'bfloat16'. Got {t}")
 
 
 def get_sparsity(tensor: torch.Tensor) -> float:
-    """
-    Calculate the sparsity of the given tensor
+    """Calculate the sparsity of the given tensor
         sparsity = #zeros / #elements = 1 - #nonzeros / #elements
 
     Args:
@@ -150,13 +185,11 @@ def get_sparsity(tensor: torch.Tensor) -> float:
 
 
 def get_model_sparsity(model: nn.Module) -> float:
-    """
-    Calculate the sparsity of the given model
+    """Calculate the sparsity of the given model
         sparsity = #zeros / #elements = 1 - #nonzeros / #elements
 
     model (nn.Module): input model
     """
-
     num_nonzeros, num_elements = 0, 0
     for param in model.parameters():
         num_nonzeros += param.count_nonzero()
@@ -165,14 +198,14 @@ def get_model_sparsity(model: nn.Module) -> float:
 
 
 def get_num_parameters(model: nn.Module, count_nonzero_only: bool = False) -> int:
-    """
-    Calculate the total number of parameters of model
+    """Calculate the total number of parameters of model
     Args:
          model (nn.Module): input model
          count_nonzero_only (bool): only count nonzero weights
 
     Returns:
         num_counted_elements (int): number of counted elements
+
     """
     num_counted_elements = 0
     for param in model.parameters():
@@ -183,27 +216,30 @@ def get_num_parameters(model: nn.Module, count_nonzero_only: bool = False) -> in
     return num_counted_elements
 
 
-def get_model_size(model: nn.Module, data_width: int = 32, count_nonzero_only: bool = False) -> int:
-    """
-    Calculate the model size in bits
+def get_model_size(
+    model: nn.Module, data_width: int = 32, count_nonzero_only: bool = False
+) -> int:
+    """Calculate the model size in bits
 
     Args:
         model (nn.Module): input model
         data_width (int): #bits per element
         count_nonzero_only (bool): only count nonzero weights
+
     """
     return get_num_parameters(model, count_nonzero_only) * data_width
 
 
-def collect_stats(model: nn.Module, inputs: torch.Tensor):
-    """
-    Collect model statistics
+def collect_stats(
+    model: nn.Module, inputs: torch.Tensor
+) -> tuple[int, int, int, float]:
+    """Collect model statistics
 
     Args:
         model (nn.Module): input model
         inputs (torch.Tensor): input tensor
-    """
 
+    """
     model_size = get_model_size(model)
     model_sparsity = get_model_sparsity(model)
     n_params = get_num_parameters(model)
@@ -212,9 +248,12 @@ def collect_stats(model: nn.Module, inputs: torch.Tensor):
     return macs, n_params, model_size, model_sparsity
 
 
-def evaluate(model: nn.Module, dataloader: DataLoader[Mapping[str, Tensor]], device: str | torch.device) -> float:
-    """
-    Evaluate the model on the dataset
+def evaluate(
+    model: nn.Module,
+    dataloader: DataLoader[Mapping[str, Tensor]],
+    device: str | torch.device,
+) -> float:
+    """Evaluate the model on the dataset
 
     Args:
         model (torch.nn.Module): Model to evaluate
@@ -222,7 +261,6 @@ def evaluate(model: nn.Module, dataloader: DataLoader[Mapping[str, Tensor]], dev
         device (str): Device to run the model on
 
     """
-
     preds, actual = [], []
 
     for batch in tqdm(dataloader, total=len(dataloader)):
@@ -240,9 +278,8 @@ def evaluate(model: nn.Module, dataloader: DataLoader[Mapping[str, Tensor]], dev
     return acc
 
 
-def measure_inference_time(model: nn.Module, input_example: Tensor):
-    """
-    Measure the inference time of the model
+def measure_inference_time(model: nn.Module, input_example: Tensor) -> list[float]:
+    """Measure the inference time of the model
 
     Args:
         model (torch.nn.Module): Model to measure inference time
@@ -250,8 +287,8 @@ def measure_inference_time(model: nn.Module, input_example: Tensor):
 
     Returns:
         times (List[float]): List of inference times
-    """
 
+    """
     start_events = [torch.cuda.Event(enable_timing=True) for _ in range(100)]
     end_events = [torch.cuda.Event(enable_timing=True) for _ in range(100)]
 
@@ -263,7 +300,7 @@ def measure_inference_time(model: nn.Module, input_example: Tensor):
         end_events[i].record()
 
     torch.cuda.synchronize()
-    times = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
+    times = [s.elapsed_time(e) for s, e in zip(start_events, end_events, strict=True)]
 
     return times
 
@@ -276,9 +313,8 @@ def report_inference_and_size(
     model_sparsity: float,
     times: Iterable[float],
     description: str = "",
-):
-    """
-    Report the inference time and size of the model
+) -> None:
+    """Report the inference time and size of the model
 
     Args:
         base_macs (int): MACs of the model
@@ -288,8 +324,8 @@ def report_inference_and_size(
         model_sparsity (float): Sparsity of the model
         times: List of inference times
         description: Description of the stage (e.g. Pruned, Base)
-    """
 
+    """
     print(
         f"\nResults {description}\n",
         "-" * 180,
@@ -309,16 +345,38 @@ def report_inference_and_size(
     )
 
 
+def get_pruning_method(pruning_method: str) -> Callable[[str], Any]:
+    """Get the pruning method"""
+    if pruning_method == "random_structured":
+        return random_structured
+    elif pruning_method == "random_unstructured":
+        return random_unstructured
+    elif pruning_method == "l1_unstructured":
+        return l1_unstructured
+    elif pruning_method == "ln_structured":
+        return ln_structured
+    else:
+        raise ValueError("Invalid pruning method")
+
+
 def prune(
-    model: nn.Module, pruning_ratio: float, method: str, return_masks: bool = False, dim: int = 0, n: int | float = 1
+    model: nn.Module,
+    pruning_ratio: float,
+    method: str,
+    per_layer_pruning_ratio: dict[str, float] | None = None,
+    ignore: list[str] | None = None,
+    return_masks: bool = False,
+    dim: int = 0,
+    n: float = 1,
 ) -> tuple[nn.Module, dict] | tuple[nn.Module, None]:
-    """
-    Prune the model with the given pruning ratio and method
+    """Prune the model with the given pruning ratio and method
 
     Args:
         model (torch.nn.Module): Model to prune
-        pruning_ratio (float): Percentage of Params to keep
+        pruning_ratio (float): Percentage of Params to keep.
+        per_layer_pruning_ratio (dict[str, float], optional): Define different pruning ratios for each layer.
         method (str): Pruning method to use
+        ignore (list[str], optional): List of layers to ignore
         return_masks (bool): Return the masks
         dim (int): Dimension to prune
         n (int | float): n for ln_structured pruning (L_n norm)
@@ -326,35 +384,40 @@ def prune(
     Returns:
         - tuple (nn.Module, dict): Pruned model and masks
         - nn.Module: Pruned model
+
     """
-
-    if method == "random_structured":
-        pruner = random_structured
-    elif method == "random_unstructured":
-        pruner = random_unstructured
-    elif method == "l1_unstructured":
-        pruner = l1_unstructured
-    elif method == "ln_structured":
-        pruner = ln_structured
-    else:
-        raise ValueError("Invalid pruning method")
-
-    masks = dict()
+    per_layer_pruning_ratio = per_layer_pruning_ratio or dict()
+    ignore = ignore or []
+    pruner = get_pruning_method(method)
+    masks = {}
 
     for name, module in model.named_modules():
-        if hasattr(module, 'weight') and not isinstance(module, nn.LayerNorm):  # Skip LayerNorm
-            if 'dim' in getfullargspec(pruner).args:
-                if method == "ln_structured":
-                    pruner(module, name="weight", amount=pruning_ratio, dim=dim, n=n)
-                else:
-                    pruner(module, name="weight", amount=pruning_ratio, dim=dim)
-            else:
-                pruner(module, name="weight", amount=pruning_ratio)
+        if (
+            hasattr(module, "weight")
+            and not isinstance(module, nn.LayerNorm)
+            and not contains_any_substring_loop(name, ignore)
+        ):  # Skip LayerNorm
+            amount = (
+                per_layer_pruning_ratio[name]
+                if name in per_layer_pruning_ratio
+                else pruning_ratio
+            )
+            print(f"Pruning layer {name} with amount {amount}\n")
 
-            if hasattr(module, 'weight_mask'):
+            if "dim" in getfullargspec(pruner).args:
+                if method == "ln_structured":
+                    pruner(module, name="weight", amount=amount, dim=dim, n=n)
+                else:
+                    pruner(module, name="weight", amount=amount, dim=dim)
+            else:
+                pruner(module, name="weight", amount=amount)
+
+            if hasattr(module, "weight_mask"):
                 masks[name] = module.weight_mask
 
-            remove(module, name="weight")  # The parameter named name+'_orig' is removed from the parameter list.
+            remove(
+                module, name="weight"
+            )  # The parameter named name+'_orig' is removed from the parameter list.
 
     if return_masks:
         return model, masks
@@ -370,9 +433,8 @@ def finetune(
     lr: float = 2e-5,
     weight_decay: float = 1e-4,
     masks: dict[str, Tensor] | None = None,
-):
-    """
-    Finetune the model
+) -> nn.Module:
+    """Finetune the model
 
     Args:
         model (torch.nn.Module): Model to finetune
@@ -382,6 +444,7 @@ def finetune(
         lr (float): Learning rate
         weight_decay (float): Weight decay
         masks (dict): Masks for the model
+
     """
     model.train()
     model.to(device)
@@ -389,10 +452,12 @@ def finetune(
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
-    for epoch in range(epochs):
-
+    for _ in range(epochs):
         for batch in tqdm(dataloader, total=len(dataloader)):
-            images, labels = batch["pixel_values"].to(device), batch["labels"].to(device)
+            images, labels = (
+                batch["pixel_values"].to(device),
+                batch["labels"].to(device),
+            )
 
             optimizer.zero_grad()
             output = model(images)
@@ -408,3 +473,74 @@ def finetune(
 
     model.eval()
     return model
+
+
+def sensitivity_scan(
+    model: nn.Module,
+    pruning_ratios: list[float],
+    pruning_method: str,
+    dataloader: DataLoader[Mapping[str, Tensor]],
+    modules: list[str] | None = None,
+    dim: int = 0,
+    n: float = 1,
+    device: str | torch.device = "cuda",
+    save: str | None = None,
+) -> dict[str, dict[str, float]]:
+    """Sensitivity scan for pruning the model
+
+    Args:
+        model (nn.Module): Model to prune
+        pruning_ratios (list[float]): List of pruning ratios to test
+        pruning_method (str): Pruning method to use
+        dataloader (DataLoader): DataLoader for the dataset
+        modules (list[str] | None): List of module names to prune, if None all modules are pruned
+        dim (int): Dimension to prune
+        n (float): n for ln_structured pruning (L_n norm)
+        device (str | torch.device): Device to run the model on
+
+    Returns:
+        sensitivities (dict[str, dict[str, float]]): Sensitivities for each module
+
+    """
+    pruner = get_pruning_method(pruning_method)
+    modules = modules or [
+        name
+        for name, module in model.named_modules()
+        if hasattr(module, "weight") and not isinstance(module, nn.LayerNorm)
+    ]
+    sensitivities = {}
+
+    for name, module in model.named_modules():
+        if name not in modules:
+            continue
+        original_state = module.weight.clone()
+        print(f"Running sensitivity scan for module: {name}")
+
+        for ratio in pruning_ratios:
+            print(f"Pruning ratio: {ratio}")
+            if "dim" in getfullargspec(pruner).args:
+                if pruning_method == "ln_structured":
+                    pruner(module, name="weight", amount=ratio, dim=dim, n=n)
+                else:
+                    pruner(module, name="weight", amount=ratio, dim=dim)
+            else:
+                pruner(module, name="weight", amount=ratio)
+
+            remove(module, name="weight")
+
+            acc = evaluate(model, dataloader, device)
+            model_sparsity = get_model_sparsity(model)
+            sensitivities.setdefault(name, []).append(
+                {
+                    "ratio": ratio,
+                    "accuracy": acc,
+                    "model_sparsity": model_sparsity,
+                }
+            )
+            module.weight.data = original_state
+
+    if save:
+        with open(save, "w") as f:
+            json.dump(sensitivities, f)
+
+    return sensitivities
