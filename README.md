@@ -34,23 +34,28 @@ The available pruning methods are:
 To run the code, you can use the following command:
 
 ```bash
-python prune/run_prune.py --pruning_method random_unstructured --pruning_ratio 0.5
+cd ./experiments/imagenet/torch-nn && python python imgnet1k_base_prune.py --prune_method=random_unstructured --pruning_ratio=0.4
 ```
 
-This will prune the model using the Random Unstructured Pruning method with a pruning ratio of 0.5.
+This will prune the model using the Random Unstructured Pruning method with a pruning ratio of 0.4.
 
 To search for the best pruning ratio, you can use the following command:
 
 ```bash
-python prune/search_pruning_ratio.py --pruning_method random_unstructured --search
+cd ./experiments/imagenet/torch-nn && python python imgnet1k_search.py --prune_method=random_unstructured
 ```
 
 This will search for the best pruning ratio for the Random Unstructured Pruning method.
-
 You can also prune and fine-tune the model using the following command:
 
 ```bash
-python prune/run_prune_finetune.py --pruning_method random_unstructured --pruning_ratio 0.5 --finetune
+cd ./experiments/imagenet/torch-nn && python python imgnet1k_prune_finetune.py --prune_method=random_unstructured --pruning_ratio=0.4
+```
+
+Last but not least, you can also iteratively prune and finetune using the following command:
+
+```bash
+cd ./experiments/imagenet/torch-nn && python python imgnet1k_iterative_finetune.py --prune_method=random_unstructured --pruning_ratio=0.4 --iterations=-1
 ```
 
 ### References
