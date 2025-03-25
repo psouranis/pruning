@@ -1,5 +1,9 @@
 # Pruning
 
+<p>
+  <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch %20%7C%202.x-673ab7.svg" alt="Tested PyTorch Versions"></a>
+</p>
+
 <div style="text-align: center;">
   <img src="./tree.png" style="max-width: 40%">
 </div>
@@ -49,3 +53,8 @@ You can also prune and fine-tune the model using the following command:
 python prune/run_prune_finetune.py --pruning_method random_unstructured --pruning_ratio 0.5 --finetune
 ```
 
+### References
+
+- [A Survey on Deep Neural Network Pruning: Taxonomy, Comparison, Analysis, and Recommendations](https://arxiv.org/pdf/2308.06767)
+- [Structured Pruning for Deep Convolutional Neural Networks: A survey](https://arxiv.org/pdf/2303.00566)
+- [TorchPruning](https://github.com/VainF/Torch-Pruning)

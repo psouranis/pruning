@@ -1692,7 +1692,7 @@ wheels = [
 [[package]]
 name = "pruning"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "black" },
     { name = "datasets" },

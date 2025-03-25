@@ -1,12 +1,12 @@
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
 
 from numpy.typing import NDArray
 
 
 def plot_pruning_results(
-    ratios: NDArray[float],
-    accuracies: NDArray[float],
+    ratios: NDArray[np.float64],
+    accuracies: NDArray[np.float64],
     base_accuracy: float,
     title: str = "Accuracy vs Pruning ratio",
     x_label: str = "Pruning Ratio (Parameters Pruned Away)",
