@@ -137,11 +137,8 @@ class Pruner:
         args_evaluate = args_evaluate or {}
         args_finetune = args_finetune or {}
 
-        if iterations == -1:
-            print(
-                f"Iterations: {iterations} is set to 1000, step_ratio is set to: {self.ratio}"
-            )
-            iterations = 1000 if iterations == -1 else iterations
+        step_ratio = self.ratio / iterations
+        self.ratio = step_ratio
 
         for _ in range(iterations):
             model, _ = self.prune(
@@ -154,15 +151,17 @@ class Pruner:
 
             finetune(model, dataloader, **args_finetune)
             evaluate(model, eval_dataloader, **args_evaluate)
-
             sparsity = get_model_sparsity(model)
             print(f"Sparsity: {sparsity}")
+
+            self.remove(model)  # remove the masks only after finetuning
 
             if stop_on_target_sparsity and get_model_sparsity(model) >= self.ratio:
                 print(f"Target sparsity {self.ratio} reached. Stopping the iterations.")
                 break
 
-        model = self.remove(model)  # remove the masks after finetuning
+            self.ratio += step_ratio
+
         return model
 
     def scan(
